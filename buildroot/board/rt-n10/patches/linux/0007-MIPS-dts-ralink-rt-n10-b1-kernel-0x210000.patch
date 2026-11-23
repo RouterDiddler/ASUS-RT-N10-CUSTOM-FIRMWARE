@@ -1,0 +1,35 @@
+From 25274c45b8331c6fc46b9654cb8705c2f2b80d95 Mon Sep 17 00:00:00 2001
+From: RT-N10 build <rtn10@localhost>
+Date: Sat, 14 Nov 2026 20:58:53 +0300
+Subject: [PATCH] MIPS: dts: ralink: RT-N10 B1: kernel 0x210000 for IPv6,
+ rootfs 0x260000/0x150000
+
+---
+ arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts b/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts
+index 879154524..8abc4105c 100644
+--- a/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts
++++ b/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts
+@@ -60,14 +60,14 @@ macaddr_factory_4: macaddr@4 {
+ 			/* U-Boot boots the uImage at 0xbfc50000 */
+ 			partition@50000 {
+ 				label = "kernel";
+-				reg = <0x50000 0x1f0000>;
++				reg = <0x50000 0x210000>;
+ 				read-only; /* rtn10-fw-ro */
+ 			};
+ 
+ 			/* squashfs (xz), root=/dev/mtdblock4 */
+-			partition@240000 {
++			partition@260000 {
+ 				label = "rootfs";
+-				reg = <0x240000 0x170000>;
++				reg = <0x260000 0x150000>;
+ 				read-only; /* rtn10-fw-ro */
+ 			};
+ 
+-- 
+2.56.1
+

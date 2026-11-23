@@ -1,0 +1,6 @@
+#!/bin/sh
+# Write a tar archive of the settings (/data/rtn10) to stdout, e.g.:
+#   ssh root@192.168.10.1 rtn10-backup > rtn10-settings.tar
+. /etc/rtn10/defaults
+[ -t 1 ] && { echo "Redirect the output to a file, see: head -5 $0" >&2; exit 1; }
+tar -C "${CONF_DIR%/*}" -cf - "${CONF_DIR##*/}"

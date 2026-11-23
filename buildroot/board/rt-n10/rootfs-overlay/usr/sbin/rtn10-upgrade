@@ -1,0 +1,89 @@
+#!/bin/sh
+# Firmware upgrade over SSH that keeps the settings:
+#
+#   ssh root@192.168.10.1 "rtn10-upgrade $(md5sum firmware.bin | cut -c1-32)" < firmware.bin
+#
+# firmware.bin is the image built by post-image.sh (kernel + rootfs,
+# 0x3a0000 bytes for flash 0x050000-0x3effff). Only the "kernel" and "rootfs" partitions are written, with
+# flashcp (erase, write, read back and compare), then the router reboots.
+# The settings blocks (cfg-a, cfg-b) are never touched.
+#
+# Nothing is written unless all checks pass. An image that moves the
+# kernel/rootfs boundary is refused: write it from U-Boot instead.
+# If power is lost while writing, recover over the serial console (U-Boot is
+# never written).
+
+FW_SIZE=$((0x3a0000))
+W=/tmp/rtn10-upgrade
+
+log() { echo "rtn10-upgrade: $*" >&2; logger -t rtn10-upgrade "$*" 2>/dev/null; }
+die() { log "ERROR: $*"; rm -rf "$W"; exit 1; }
+
+mtd_dev()  { grep "\"$1\"" /proc/mtd | cut -d: -f1; }
+mtd_size() { echo $((0x$(grep "\"$1\"" /proc/mtd | cut -d' ' -f2))); }
+writable() { [ $(( $(cat /sys/class/mtd/$1/flags) & 0x400 )) -ne 0 ]; }
+
+want="$1"
+case "$want" in
+	[0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) [ ${#want} -eq 32 ] || die "bad md5 argument" ;;
+	*) die "usage: rtn10-upgrade <md5 of firmware.bin> < firmware.bin" ;;
+esac
+[ -t 0 ] && die "feed firmware.bin on stdin"
+
+K=$(mtd_dev kernel); R=$(mtd_dev rootfs)
+[ -n "$K" ] && [ -n "$R" ] && [ -c /dev/$K ] && [ -c /dev/$R ] ||
+	die "kernel/rootfs MTD devices not found"
+writable $K && writable $R ||
+	die "kernel/rootfs partitions are read-only (running the RAM test image?)"
+KS=$(mtd_size kernel); RS=$(mtd_size rootfs)
+[ $((KS % 65536)) -eq 0 ] && [ $((RS % 65536)) -eq 0 ] || die "odd partition sizes"
+[ $((KS + RS)) -eq $FW_SIZE ] || die "kernel+rootfs partitions are not $FW_SIZE bytes: layout differs, use U-Boot"
+
+avail=$(sed -n 's/^MemAvailable: *\([0-9]*\) kB/\1/p' /proc/meminfo)
+[ "${avail:-0}" -gt 9000 ] || die "not enough free memory (${avail} kB)"
+
+rm -rf "$W"; mkdir -p "$W" || die "cannot create $W"
+log "receiving image..."
+cat > "$W/fw" || die "receive failed"
+
+size=$(wc -c < "$W/fw")
+[ "$size" -eq "$FW_SIZE" ] || die "image is $size bytes, expected $FW_SIZE"
+md5=$(md5sum "$W/fw" | cut -c1-32)
+[ "$md5" = "$want" ] || die "md5 mismatch: got $md5"
+[ "$(dd if="$W/fw" bs=4 count=1 2>/dev/null)" = "$(printf '\047\005\031\126')" ] ||
+	die "no uImage at the start of the image"
+[ "$(dd if="$W/fw" bs=65536 skip=$((KS / 65536)) count=1 2>/dev/null | head -c 4)" = "hsqs" ] ||
+	die "no squashfs at 0x$(printf %x $KS): partition layout differs, use U-Boot"
+
+dd if="$W/fw" of="$W/kernel" bs=65536 count=$((KS / 65536)) 2>/dev/null &&
+dd if="$W/fw" of="$W/rootfs" bs=65536 skip=$((KS / 65536)) count=$((RS / 65536)) 2>/dev/null ||
+	die "split failed"
+rm -f "$W/fw"
+log "image OK (md5 $md5), kernel -> /dev/$K, rootfs -> /dev/$R"
+
+# minimal root on tmpfs, so that writing never reads from the old rootfs
+mkdir -p "$W/root/bin" "$W/root/lib" "$W/root/dev" || die "mkdir failed"
+cp /bin/busybox "$W/root/bin/" && cp /lib/libc.so "$W/root/lib/" &&
+	ln -s libc.so "$W/root/lib/ld-musl-mipsel-sf.so.1" &&
+	mv "$W/kernel" "$W/rootfs" "$W/root/" || die "cannot prepare $W/root"
+mount -o bind /dev "$W/root/dev" || die "cannot bind /dev"
+
+log "stopping services; the router writes the flash and reboots by itself"
+log "this SSH connection will drop now, wait about 2 minutes"
+/etc/init.d/S50router stop >/dev/null 2>&1
+/etc/init.d/S06gpio stop >/dev/null 2>&1
+/etc/init.d/S05watchdog stop >/dev/null 2>&1
+sync
+
+# shellcheck disable=SC2016
+setsid chroot "$W/root" /bin/busybox sh -c '
+	exec >/dev/console 2>&1
+	echo "rtn10-upgrade: writing kernel ($1)"
+	/bin/busybox flashcp /kernel /dev/$1 || /bin/busybox flashcp /kernel /dev/$1 || { echo "rtn10-upgrade: KERNEL WRITE FAILED"; exit 1; }
+	echo "rtn10-upgrade: writing rootfs ($2)"
+	/bin/busybox flashcp /rootfs /dev/$2 || /bin/busybox flashcp /rootfs /dev/$2 || { echo "rtn10-upgrade: ROOTFS WRITE FAILED"; exit 1; }
+	echo "rtn10-upgrade: done, rebooting"
+	/bin/busybox sync
+	/bin/busybox reboot -f
+' rtn10-upgrade "$K" "$R" </dev/null >/dev/null 2>&1 &
+exit 0

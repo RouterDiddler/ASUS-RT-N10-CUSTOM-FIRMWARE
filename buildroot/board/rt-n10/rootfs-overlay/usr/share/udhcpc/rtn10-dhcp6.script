@@ -1,0 +1,46 @@
+#!/bin/sh
+# udhcpc6 script for the WAN (busybox, -d = request a prefix):
+#   WAN address, first /64 of the delegated prefix on the LAN bridge
+#   (dnsmasq advertises it with RA), IPv6 DNS servers for dnsmasq.
+. /etc/rtn10/defaults
+RESOLV=/etc/resolv.conf
+TAG="# $interface-v6"
+LAN6=/tmp/rtn10.lan6
+
+clear_dns() {
+	[ -f $RESOLV ] || return 0
+	grep -v "$TAG\$" $RESOLV > /tmp/resolv.v6.$$
+	cat /tmp/resolv.v6.$$ > $RESOLV
+	rm -f /tmp/resolv.v6.$$
+}
+
+lan_del() {
+	[ -s $LAN6 ] && ip -6 addr del "$(cat $LAN6)" dev $LAN_IF 2>/dev/null
+	rm -f $LAN6
+}
+
+case "$1" in
+	deconfig|leasefail|nak)
+		[ "$1" = deconfig ] && ip -6 addr flush dev "$interface" scope global
+		lan_del
+		clear_dns
+		;;
+	bound|renew)
+		[ -n "$ipv6" ] && ip -6 addr replace "$ipv6/128" dev "$interface"
+		if [ -n "$ipv6prefix" ]; then
+			p=${ipv6prefix%/*}
+			len=${ipv6prefix#*/}
+			if [ "$len" -le 64 ] 2>/dev/null; then
+				lan="${p%::}::1/64"
+				if [ "$(cat $LAN6 2>/dev/null)" != "$lan" ]; then
+					lan_del
+					ip -6 addr add "$lan" dev $LAN_IF && echo "$lan" > $LAN6
+					logger -t rtn10 "IPv6 prefix $ipv6prefix, LAN $lan"
+				fi
+			fi
+		fi
+		clear_dns
+		for d in $dns; do echo "nameserver $d $TAG" >> $RESOLV; done
+		;;
+esac
+exit 0

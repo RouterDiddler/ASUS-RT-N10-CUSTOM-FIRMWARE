@@ -1,0 +1,16 @@
+#!/bin/sh
+# Hardware watchdog (rt2880_wdt): busybox feeds it every 5 s; if the system
+# hangs for 20 s the SoC resets and U-Boot boots the firmware again.
+case "$1" in
+	start)
+		if [ -c /dev/watchdog ]; then
+			printf "Starting watchdog: "
+			watchdog -t 5 -T 20 /dev/watchdog && echo "OK" || echo "FAIL"
+		fi
+		;;
+	stop)
+		# busybox watchdog writes the magic close character on SIGTERM
+		killall watchdog 2>/dev/null
+		;;
+	*) echo "Usage: $0 {start|stop}"; exit 1 ;;
+esac

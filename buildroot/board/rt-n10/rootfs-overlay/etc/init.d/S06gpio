@@ -1,0 +1,14 @@
+#!/bin/sh
+# reset button + LED daemon (see /usr/sbin/rtn10-gpio)
+PID=/var/run/rtn10-gpio.pid
+case "$1" in
+	start)
+		printf "Starting button/LED: "
+		start-stop-daemon -S -b -m -p $PID -x /usr/sbin/rtn10-gpio && echo "OK" || echo "FAIL"
+		;;
+	stop)
+		start-stop-daemon -K -p $PID 2>/dev/null; rm -f $PID
+		;;
+	restart) "$0" stop; "$0" start ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

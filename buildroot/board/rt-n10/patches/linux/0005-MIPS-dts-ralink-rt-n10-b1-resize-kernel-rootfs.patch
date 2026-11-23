@@ -1,0 +1,35 @@
+From b599ee8820885b885511fcfc4e19a5f952ca8ae7 Mon Sep 17 00:00:00 2001
+From: RT-N10 build <rtn10@localhost>
+Date: Sat, 14 Nov 2026 15:57:16 +0300
+Subject: [PATCH] MIPS: dts: ralink: RT-N10 B1: smaller kernel partition,
+ larger rootfs
+
+---
+ arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts b/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts
+index 2fd79e816..ff28fa2cf 100644
+--- a/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts
++++ b/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts
+@@ -60,14 +60,14 @@ macaddr_factory_4: macaddr@4 {
+ 			/* U-Boot boots the uImage at 0xbfc50000 */
+ 			partition@50000 {
+ 				label = "kernel";
+-				reg = <0x50000 0x220000>;
++				reg = <0x50000 0x1f0000>;
+ 				read-only;
+ 			};
+ 
+ 			/* squashfs (xz), root=/dev/mtdblock4 */
+-			partition@270000 {
++			partition@240000 {
+ 				label = "rootfs";
+-				reg = <0x270000 0x140000>;
++				reg = <0x240000 0x170000>;
+ 				read-only;
+ 			};
+ 
+-- 
+2.56.1
+

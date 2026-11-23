@@ -1,0 +1,70 @@
+From: RT-N10 build <rtn10@localhost>
+Date: Sat, 14 Nov 2026 21:45:00 +0300
+Subject: [PATCH] MIPS: dts: ralink: RT-N10 B1: two 64 KB settings blocks
+ instead of the JFFS2 data partition
+
+cfg-a at 0x30000 (the old ASUS nvram block) and cfg-b at 0x3f0000 (the
+last block) hold two copies of the settings; kernel and rootfs get the
+0x050000-0x3effff area (kernel 0x220000, rootfs 0x180000).
+
+---
+ arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts | 31 ++++++++++++---------
+--- a/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts
++++ b/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts
+@@ -33,10 +33,17 @@
+ 				read-only;
+ 			};
+ 
++			/*
++			 * Settings copy A (was the stock ASUS nvram block; U-Boot
++			 * does not use it). Settings copy B is the last block.
++			 * Read-only here so that the RAM test image can never
++			 * write to flash; post-image.sh drops the flag for the
++			 * flash kernel only.
++			 */
+ 			partition@30000 {
+-				label = "nvram";
++				label = "cfg-a";
+ 				reg = <0x30000 0x10000>;
+-				read-only;
++				read-only; /* rtn10-cfg-ro */
+ 			};
+ 
+ 			/* wifi calibration (RT3050 EEPROM layout) and MAC */
+@@ -60,26 +67,22 @@
+ 			/* U-Boot boots the uImage at 0xbfc50000 */
+ 			partition@50000 {
+ 				label = "kernel";
+-				reg = <0x50000 0x210000>;
++				reg = <0x50000 0x220000>;
+ 				read-only; /* rtn10-fw-ro */
+ 			};
+ 
+ 			/* squashfs (xz), root=/dev/mtdblock4 */
+-			partition@260000 {
++			partition@270000 {
+ 				label = "rootfs";
+-				reg = <0x260000 0x150000>;
++				reg = <0x270000 0x180000>;
+ 				read-only; /* rtn10-fw-ro */
+ 			};
+ 
+-			/*
+-			 * JFFS2 for settings (/data). Read-only here so that the
+-			 * RAM test image can never write to flash; post-image.sh
+-			 * drops the flag for the flash kernel only.
+-			 */
+-			partition@3b0000 {
+-				label = "data";
+-				reg = <0x3b0000 0x50000>;
+-				read-only; /* rtn10-data-ro */
++			/* settings copy B, see cfg-a */
++			partition@3f0000 {
++				label = "cfg-b";
++				reg = <0x3f0000 0x10000>;
++				read-only; /* rtn10-cfg-ro */
+ 			};
+ 		};
+ 	};
+-- 
+2.56.1

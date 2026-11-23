@@ -1,0 +1,19 @@
+MIPS: dts: ralink: rt3050: add ralink,rt3350-sysc compatible
+
+arch/mips/ralink/clk.c:clk_cpu() looks up the sysc node by
+"ralink,rt3350-sysc" on RT3350, but rt3050.dtsi only lists
+rt3052/rt3050-sysc. of_find_compatible_node() returns NULL and boot
+panics with "unable to get CPU clock, err=-2". RT3350 uses the same
+clock tree as RT3050, so keep rt3050-sysc as the driver match.
+
+--- a/arch/mips/boot/dts/ralink/rt3050.dtsi	2026-11-14 09:40:48.805613558 +0300
++++ b/arch/mips/boot/dts/ralink/rt3050.dtsi	2026-11-14 09:40:48.806443803 +0300
+@@ -28,7 +28,7 @@
+ 		#size-cells = <1>;
+ 
+ 		sysc: syscon@0 {
+-			compatible = "ralink,rt3052-sysc", "ralink,rt3050-sysc", "syscon";
++			compatible = "ralink,rt3350-sysc", "ralink,rt3052-sysc", "ralink,rt3050-sysc", "syscon";
+ 			reg = <0x0 0x100>;
+ 			#clock-cells = <1>;
+ 			#reset-cells = <1>;

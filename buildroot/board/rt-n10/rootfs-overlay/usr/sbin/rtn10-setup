@@ -1,0 +1,51 @@
+#!/bin/sh
+# RT-N10 first-boot / reconfiguration wizard (serial console).
+# Asks for the Wi-Fi name and WPA2 password, stores them in $CONF_DIR
+# (saved to flash with rtn10-save) and (re)starts the router services.
+export LC_ALL=C
+. /etc/rtn10/defaults
+
+if ! grep -q " /data " /proc/mounts; then
+	echo "HATA: /data bağlı değil, ayarlar kaydedilemez." >&2
+	exit 1
+fi
+mkdir -p "$CONF_DIR" || exit 1
+
+echo
+echo "=============================================="
+echo "  RT-N10 kurulum: Wi-Fi ağ adı ve şifresi"
+echo "=============================================="
+
+while :; do
+	printf "Wi-Fi ağ adı (SSID, 1-32 bayt): "
+	IFS= read -r ssid || exit 1
+	n=${#ssid}
+	[ "$n" -ge 1 ] && [ "$n" -le 32 ] && break
+	echo "  Geçersiz uzunluk ($n). Tekrar deneyin."
+done
+
+while :; do
+	printf "Wi-Fi şifresi (WPA2, 8-63 karakter): "
+	stty -echo 2>/dev/null; IFS= read -r psk; stty echo 2>/dev/null; echo
+	n=${#psk}
+	if [ "$n" -lt 8 ] || [ "$n" -gt 63 ]; then
+		echo "  Şifre 8-63 karakter olmalı ($n)."; continue
+	fi
+	case "$psk" in
+		*[!\ -~]*) echo "  Şifrede sadece İngilizce harf, rakam ve noktalama kullanın."; continue ;;
+	esac
+	printf "Şifre (tekrar): "
+	stty -echo 2>/dev/null; IFS= read -r psk2; stty echo 2>/dev/null; echo
+	[ "$psk" = "$psk2" ] && break
+	echo "  Şifreler eşleşmedi."
+done
+
+umask 077
+printf '%s\n' "$ssid" > "$CONF_DIR/ssid.new" &&
+printf '%s\n' "$psk" > "$CONF_DIR/psk.new" &&
+mv "$CONF_DIR/ssid.new" "$CONF_DIR/ssid" &&
+mv "$CONF_DIR/psk.new" "$CONF_DIR/psk" && /usr/sbin/rtn10-save || {
+	echo "HATA: ayarlar yazılamadı." >&2; exit 1; }
+
+echo "Kaydedildi. Servisler başlatılıyor..."
+/etc/init.d/S50router restart

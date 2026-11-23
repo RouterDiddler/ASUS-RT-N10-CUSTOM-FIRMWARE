@@ -1,0 +1,40 @@
+#!/bin/sh
+# SSH console on the LAN only (dropbear, public key logins only).
+#   authorized keys: /data/rtn10/ssh/authorized_keys (root's ~/.ssh)
+#   host key:        /data/rtn10/dropbear/, created once and saved (rtn10-save)
+# The firewall in S50router drops everything coming from the WAN anyway.
+
+. /etc/rtn10/defaults
+SSH_DIR=$CONF_DIR/ssh
+KEY_DIR=$CONF_DIR/dropbear
+HOSTKEY=$KEY_DIR/dropbear_ed25519_host_key
+PID=/var/run/dropbear.pid
+
+start() {
+	printf "Starting SSH: "
+	if ! grep -q " /data " /proc/mounts; then
+		echo "skipped (/data not mounted)"; return 0
+	fi
+	umask 077
+	mkdir -p "$SSH_DIR" "$KEY_DIR"
+	[ -s "$SSH_DIR/authorized_keys" ] ||
+		cp /etc/rtn10/authorized_keys.default "$SSH_DIR/authorized_keys"
+	if [ ! -s "$HOSTKEY" ]; then
+		dropbearkey -t ed25519 -f "$HOSTKEY" >/dev/null 2>&1 || {
+			echo "FAIL (host key)"; return 1; }
+		/usr/sbin/rtn10-save >/dev/null 2>&1
+	fi
+	dropbear -s -r "$HOSTKEY" -p "$LAN_IP:22" -P $PID && echo "OK ($LAN_IP:22, key only)" || echo "FAIL"
+}
+
+stop() {
+	[ -f $PID ] && kill "$(cat $PID)" 2>/dev/null
+	rm -f $PID
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; sleep 1; start ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

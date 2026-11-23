@@ -1,0 +1,78 @@
+#!/bin/sh
+# Buttons and WPS LED of the RT-N10 B1, through /dev/mem (busybox devmem):
+# mainline Linux has no GPIO driver for the RT305x PIO block.
+#
+#   GPIO 10  reset button, active low: hold 5 s -> wipe the settings (both flash copies), reboot
+#   GPIO  0  WPS button, active low: press and release -> Wi-Fi on/off
+#   GPIO 14  green WPS LED, active low:
+#              blinking      starting, or not set up yet
+#              steady        router services running, Wi-Fi on
+#              off           router services running, Wi-Fi switched off
+#              fast blinking factory reset
+#
+# GPIO 10 and 14 are in the UARTF pin group, which is switched to GPIO mode.
+
+GPIOMODE=0x10000060
+DATA=0x10000620; DIR=0x10000624; POL=0x10000628; SET=0x1000062c; CLR=0x10000630
+RST=$((1 << 10))
+WPS=$((1 << 0))
+LED=$((1 << 14))
+TICK=0.25
+HOLD=20			# 20 x 0.25 s = 5 s
+. /etc/rtn10/defaults
+
+rd() { echo $(( $(devmem $1) )); }
+wr() { devmem $1 32 $2; }
+
+led_on()  { wr $CLR $LED; }
+led_off() { wr $SET $LED; }
+
+# UARTF group (GPIO 7-14) as plain GPIO, no inversion, LED out, buttons in
+wr $GPIOMODE $(( ($(rd $GPIOMODE) & ~(7 << 2)) | (7 << 2) ))
+wr $POL $(( $(rd $POL) & ~(RST | WPS | LED) ))
+wr $DIR $(( ($(rd $DIR) | LED) & ~(RST | WPS) ))
+
+factory_reset() {
+	logger -t rtn10-gpio "reset button held: wiping $CONF_DIR and rebooting"
+	echo "rtn10-gpio: fabrika ayarlarına dönülüyor..." > /dev/console
+	i=0
+	while [ $i -lt 10 ]; do led_on; sleep 0.1; led_off; sleep 0.1; i=$((i + 1)); done
+	rm -rf "$CONF_DIR"
+	/usr/sbin/rtn10-cfg erase
+	sync
+	reboot
+	exit 0
+}
+
+rst_held=0
+wps_down=0
+t=0
+while :; do
+	if [ ! -e /tmp/rtn10.ready ]; then
+		[ $((t % 4)) -lt 2 ] && led_on || led_off	# 0.5 s on / 0.5 s off
+	elif [ -e /tmp/rtn10.wifi-off ]; then
+		led_off
+	else
+		led_on
+	fi
+
+	v=$(rd $DATA)
+
+	if [ $((v & RST)) -eq 0 ]; then
+		rst_held=$((rst_held + 1))
+		[ $rst_held -ge $HOLD ] && factory_reset
+	else
+		rst_held=0
+	fi
+
+	# act on release, so that a long press does not toggle repeatedly
+	if [ $((v & WPS)) -eq 0 ]; then
+		wps_down=1
+	elif [ $wps_down -eq 1 ]; then
+		wps_down=0
+		[ -e /tmp/rtn10.ready ] && /etc/init.d/S50router wifi-toggle
+	fi
+
+	t=$((t + 1))
+	sleep $TICK
+done

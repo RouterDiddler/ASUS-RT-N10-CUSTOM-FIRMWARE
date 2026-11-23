@@ -1,0 +1,33 @@
+From 3be05c94d27ac07ee400d64094c68fe4672b265b Mon Sep 17 00:00:00 2001
+From: RT-N10 build <rtn10@localhost>
+Date: Sat, 14 Nov 2026 15:05:50 +0300
+Subject: [PATCH] MIPS: dts: ralink: RT-N10 B1: add watchdog
+
+---
+ arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts b/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts
+index b3263fc2d..2fd79e816 100644
+--- a/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts
++++ b/arch/mips/boot/dts/ralink/rt3350_asus_rt-n10-b1.dts
+@@ -90,6 +90,16 @@ partition@3b0000 {
+ };
+ 
+ &{/palmbus@10000000} {
++	watchdog@120 {
++		compatible = "ralink,rt3052-wdt", "ralink,rt2880-wdt";
++		reg = <0x120 0x10>;
++
++		clocks = <&sysc RT305X_CLK_WATCHDOG>;
++
++		resets = <&sysc 8>;
++		reset-names = "wdt";
++	};
++
+ 	ethernet@100000 {
+ 		compatible = "ralink,rt3050-eth";
+ 		reg = <0x100000 0x10000>;
+-- 
+2.56.1
+

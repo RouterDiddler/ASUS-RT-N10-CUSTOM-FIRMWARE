@@ -1,0 +1,50 @@
+From 79676288f0d32d335c8bd5c7e21f4485462610aa Mon Sep 17 00:00:00 2001
+From: RT-N10 build <rtn10@localhost>
+Date: Sat, 14 Nov 2026 14:21:50 +0300
+Subject: [PATCH] mtd: cfi_cmdset_0002: no erase suspend on MX29LV320
+
+---
+ drivers/mtd/chips/cfi_cmdset_0002.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/drivers/mtd/chips/cfi_cmdset_0002.c b/drivers/mtd/chips/cfi_cmdset_0002.c
+index 517db2f27..5c0d2a949 100644
+--- a/drivers/mtd/chips/cfi_cmdset_0002.c
++++ b/drivers/mtd/chips/cfi_cmdset_0002.c
+@@ -286,6 +286,24 @@ static void fixup_use_write_buffers(struct mtd_info *mtd)
+ }
+ #endif /* !FORCE_WORD_WRITE */
+ 
++/*
++ * Macronix MX29LV320 (seen on the ASUS RT-N10 B1): writing while an erase is
++ * suspended times out ("software timeout") and JFFS2 then reads back broken
++ * nodes. Plain writes and erases work, so never suspend an erase: writers
++ * wait for it to finish instead.
++ */
++static void fixup_mx29lv320_no_erase_suspend(struct mtd_info *mtd)
++{
++	struct map_info *map = mtd->priv;
++	struct cfi_private *cfi = map->fldrv_priv;
++	struct cfi_pri_amdstd *extp = cfi->cmdset_priv;
++
++	if (extp && extp->EraseSuspend) {
++		extp->EraseSuspend = 0;
++		pr_info("%s: erase suspend disabled\n", map->name);
++	}
++}
++
+ /* Atmel chips don't use the same PRI format as AMD chips */
+ static void fixup_convert_atmel_pri(struct mtd_info *mtd)
+ {
+@@ -463,6 +481,8 @@ static struct cfi_fixup cfi_nopri_fixup_table[] = {
+ 
+ static struct cfi_fixup cfi_fixup_table[] = {
+ 	{ CFI_MFR_ATMEL, CFI_ID_ANY, fixup_convert_atmel_pri },
++	{ CFI_MFR_MACRONIX, 0x22a8, fixup_mx29lv320_no_erase_suspend }, /* MX29LV320 B */
++	{ CFI_MFR_MACRONIX, 0x22a7, fixup_mx29lv320_no_erase_suspend }, /* MX29LV320 T */
+ #ifdef AMD_BOOTLOC_BUG
+ 	{ CFI_MFR_AMD, CFI_ID_ANY, fixup_amd_bootblock },
+ 	{ CFI_MFR_AMIC, CFI_ID_ANY, fixup_amd_bootblock },
+-- 
+2.56.1
+

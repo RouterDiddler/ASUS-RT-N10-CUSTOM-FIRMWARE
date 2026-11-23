@@ -1,0 +1,10 @@
+#!/bin/sh
+# Serial console (started by init): run the setup wizard on first boot,
+# then give a root shell without a login prompt.
+. /etc/rtn10/defaults
+cd /root 2>/dev/null || cd /
+if [ ! -s "$CONF_DIR/ssid" ] || [ ! -s "$CONF_DIR/psk" ]; then
+	/usr/sbin/rtn10-setup
+fi
+echo "Ayarlar: rtn10-setup (Wi-Fi), rtn10-guest, rtn10-sshkey, rtn10-webpass (web), elle düzenleme sonrası rtn10-save; durum: rtn10-status"
+exec /bin/sh -l

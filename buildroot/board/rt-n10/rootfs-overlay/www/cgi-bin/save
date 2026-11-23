@@ -1,0 +1,47 @@
+#!/bin/sh
+. /www/cgi-bin/common.sh
+
+fail() { page_head "Hata"; echo "<p>$1</p><p><a href=\"/cgi-bin/index\">Geri</a></p>"; page_foot; exit 0; }
+
+[ "$REQUEST_METHOD" = POST ] || fail "Sadece POST."
+# CSRF: the form must come from this router
+src="${HTTP_ORIGIN:-$HTTP_REFERER}"
+case "$src" in
+	"http://$LAN_IP"|"http://$LAN_IP/"*|http://router.lan|http://router.lan/*) ;;
+	*) fail "Geçersiz istek kaynağı." ;;
+esac
+[ "${CONTENT_LENGTH:-0}" -gt 0 ] && [ "$CONTENT_LENGTH" -le 1024 ] || fail "Geçersiz istek."
+body=$(head -c "$CONTENT_LENGTH")
+field() {	# url-decoded value of form field $1 ('+' is a space in forms)
+	v=$(printf '%s' "$body" | tr '&' '\n' | sed -n "s/^$1=//p" | head -n1 | tr '+' ' ')
+	httpd -d "$v"
+}
+no_ctrl() { [ "$(printf '%s' "$1" | tr -d '\000-\037\177')" = "$1" ]; }
+
+case "$(field action)" in
+wifi)
+	ssid=$(field ssid); psk=$(field psk)
+	n=${#ssid}; { [ "$n" -ge 1 ] && [ "$n" -le 32 ] && no_ctrl "$ssid"; } || fail "SSID 1-32 bayt olmalı."
+	if [ -n "$psk" ]; then
+		n=${#psk}; { [ "$n" -ge 8 ] && [ "$n" -le 63 ]; } || fail "Şifre 8-63 karakter olmalı."
+		case "$psk" in *[!\ -~]*) fail "Şifrede sadece İngilizce harf, rakam ve noktalama kullanın." ;; esac
+	fi
+	umask 077
+	printf '%s\n' "$ssid" > "$CONF_DIR/ssid.new" && mv "$CONF_DIR/ssid.new" "$CONF_DIR/ssid" || fail "Kaydedilemedi."
+	if [ -n "$psk" ]; then
+		printf '%s\n' "$psk" > "$CONF_DIR/psk.new" && mv "$CONF_DIR/psk.new" "$CONF_DIR/psk" || fail "Kaydedilemedi."
+	fi
+	/usr/sbin/rtn10-save >/dev/null 2>&1 || fail "Flash'a kaydedilemedi."
+	logger -t rtn10-web "Wi-Fi settings changed from $REMOTE_ADDR"
+	page_head "Kaydedildi"
+	echo "<p>Kaydedildi. Wi-Fi yeniden başlatılıyor; yeni ağa bağlanın.</p><p><a href=\"/cgi-bin/index\">Geri</a></p>"
+	page_foot
+	setsid sh -c 'sleep 2; /etc/init.d/S50router restart' </dev/null >/dev/null 2>&1 &
+	;;
+reboot)
+	logger -t rtn10-web "reboot requested from $REMOTE_ADDR"
+	page_head "Yeniden başlatılıyor"; echo "<p>Router yeniden başlatılıyor (yaklaşık 1 dakika).</p>"; page_foot
+	setsid sh -c 'sleep 2; reboot' </dev/null >/dev/null 2>&1 &
+	;;
+*) fail "Bilinmeyen işlem." ;;
+esac

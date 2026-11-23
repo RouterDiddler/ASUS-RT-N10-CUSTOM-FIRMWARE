@@ -1,0 +1,372 @@
+#!/bin/sh
+# RT-N10 B1 router services:
+#   forwarding + NAT + firewall, port forwards, WAN DHCP client,
+#   dnsmasq (LAN DHCP + DNS cache, static leases), Wi-Fi access point with an
+#   optional isolated guest network, NTP.
+#
+# Nothing is started until the first-boot setup (rtn10-setup) has stored the
+# Wi-Fi name and password in $CONF_DIR.
+#
+# Optional files in $CONF_DIR:
+#   static-leases   "aa:bb:cc:dd:ee:ff 192.168.10.50 [name]" per line
+#   port-forwards   "tcp|udp <wan port> <lan ip> [<lan port>]" per line
+#   guest-ssid, guest-psk   enable the guest Wi-Fi (see rtn10-guest)
+
+. /etc/rtn10/defaults
+
+RUN=/var/run
+HOSTAPD_CONF=/tmp/hostapd.conf
+DNSMASQ_CONF=/tmp/dnsmasq.conf
+
+configured() {
+	[ -s "$CONF_DIR/ssid" ] && [ -s "$CONF_DIR/psk" ]
+}
+
+guest_configured() {
+	[ -s "$CONF_DIR/guest-ssid" ] && [ -s "$CONF_DIR/guest-psk" ]
+}
+
+stop_pid() {
+	[ -f "$1" ] && kill "$(cat "$1")" 2>/dev/null
+	rm -f "$1"
+}
+
+# ---- configuration file readers (lines are validated, bad ones skipped) ----
+
+valid_port() {
+	case "$1" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+valid_lan_ip() {
+	case "$1" in
+		"${LAN_IP%.*}".*) n="${1##*.}" ;;
+		*) return 1 ;;
+	esac
+	case "$n" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$n" -ge 2 ] && [ "$n" -le 254 ]
+}
+
+valid_mac() {
+	echo "$1" | grep -qiE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'
+}
+
+# prints "proto wanport lanip lanport" for every valid port-forward line
+port_forwards() {
+	[ -f "$CONF_DIR/port-forwards" ] || return 0
+	while read -r proto wport ip lport rest; do
+		case "$proto" in ''|\#*) continue ;; esac
+		[ -n "$lport" ] || lport=$wport
+		if { [ "$proto" = tcp ] || [ "$proto" = udp ]; } &&
+		   valid_port "$wport" && valid_port "$lport" && valid_lan_ip "$ip"; then
+			echo "$proto $wport $ip $lport"
+		else
+			logger -t rtn10 "port-forwards: ignoring '$proto $wport $ip $lport'"
+		fi
+	done < "$CONF_DIR/port-forwards"
+}
+
+# ---- firewall ----
+
+firewall_start() {
+	echo 1 > /proc/sys/net/ipv4/ip_forward
+
+	iptables -F; iptables -X; iptables -t nat -F
+
+	# the router itself: LAN, replies, DHCP from the WAN; guests get only
+	# DHCP and DNS
+	iptables -P INPUT DROP
+	iptables -A INPUT -m conntrack --ctstate INVALID -j DROP
+	iptables -A INPUT -i lo -j ACCEPT
+	iptables -A INPUT -i $LAN_IF -j ACCEPT
+	iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+	iptables -A INPUT -i $WAN_IF -p udp --sport 67 --dport 68 -j ACCEPT
+	iptables -A INPUT -i $GUEST_IF -p udp --dport 67 -j ACCEPT
+	iptables -A INPUT -i $GUEST_IF -p udp --dport 53 -j ACCEPT
+	iptables -A INPUT -i $GUEST_IF -p tcp --dport 53 -j ACCEPT
+
+	# forwarding: LAN and guests -> WAN, replies and port forwards back.
+	# No rule lets guests reach the LAN.
+	iptables -P FORWARD DROP
+	iptables -A FORWARD -m conntrack --ctstate INVALID -j DROP
+	iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+	iptables -A FORWARD -i $LAN_IF -o $WAN_IF -j ACCEPT
+	iptables -A FORWARD -i $GUEST_IF -o $WAN_IF -j ACCEPT
+	iptables -A FORWARD -i $WAN_IF -m conntrack --ctstate DNAT -j ACCEPT
+
+	iptables -P OUTPUT ACCEPT
+	iptables -t nat -A POSTROUTING -o $WAN_IF -j MASQUERADE
+
+	port_forwards | while read -r proto wport ip lport; do
+		iptables -t nat -A PREROUTING -i $WAN_IF -p "$proto" --dport "$wport" \
+			-j DNAT --to-destination "$ip:$lport"
+	done
+}
+
+has_ipv6() { [ -d /proc/sys/net/ipv6 ]; }
+
+# IPv6: nothing unsolicited from the WAN except ICMPv6 (neighbour discovery,
+# router advertisements, path MTU) and DHCPv6 replies. No NAT for IPv6.
+firewall6_start() {
+	has_ipv6 || return 0
+	echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
+	# keep accepting router advertisements on the WAN while forwarding
+	echo 2 > /proc/sys/net/ipv6/conf/$WAN_IF/accept_ra 2>/dev/null
+	ip6tables -F; ip6tables -X
+	ip6tables -P INPUT DROP
+	ip6tables -A INPUT -m conntrack --ctstate INVALID -j DROP
+	ip6tables -A INPUT -i lo -j ACCEPT
+	ip6tables -A INPUT -i $LAN_IF -j ACCEPT
+	ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+	ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
+	ip6tables -A INPUT -i $WAN_IF -p udp --dport 546 -j ACCEPT
+	ip6tables -P FORWARD DROP
+	ip6tables -A FORWARD -m conntrack --ctstate INVALID -j DROP
+	ip6tables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+	ip6tables -A FORWARD -i $LAN_IF -o $WAN_IF -j ACCEPT
+	ip6tables -A FORWARD -p ipv6-icmp -j ACCEPT
+	ip6tables -P OUTPUT ACCEPT
+}
+
+firewall6_stop() {
+	has_ipv6 || return 0
+	echo 0 > /proc/sys/net/ipv6/conf/all/forwarding
+	ip6tables -F; ip6tables -X
+	ip6tables -P INPUT ACCEPT
+	ip6tables -P FORWARD DROP
+}
+
+firewall_stop() {
+	echo 0 > /proc/sys/net/ipv4/ip_forward
+	iptables -F; iptables -X; iptables -t nat -F
+	iptables -P INPUT ACCEPT
+	iptables -P FORWARD DROP
+}
+
+# ---- guest network bridge ----
+
+guest_bridge_up() {
+	[ -d /sys/class/net/$GUEST_IF ] || brctl addbr $GUEST_IF
+	ip addr flush dev $GUEST_IF 2>/dev/null
+	ip addr add $GUEST_IP/24 dev $GUEST_IF
+	ip link set $GUEST_IF up
+}
+
+guest_bridge_down() {
+	[ -d /sys/class/net/$GUEST_IF ] || return 0
+	ip link set $GUEST_IF down
+	brctl delbr $GUEST_IF 2>/dev/null
+}
+
+# ---- dnsmasq: DHCP + DNS for the LAN (and the guest network) ----
+
+write_dnsmasq_conf() {
+	{
+		echo "interface=$LAN_IF"
+		echo "except-interface=$WAN_IF"
+		echo "bind-dynamic"
+		echo "domain-needed"
+		echo "bogus-priv"
+		echo "stop-dns-rebind"
+		echo "rebind-localhost-ok"
+		echo "cache-size=300"
+		echo "resolv-file=/etc/resolv.conf"
+		echo "domain=lan"
+		echo "local=/lan/"
+		echo "expand-hosts"
+		echo "host-record=router.lan,$(cat /proc/sys/kernel/hostname).lan,$LAN_IP"
+		echo "dhcp-authoritative"
+		echo "dhcp-leasefile=/tmp/dnsmasq.leases"
+		echo "dhcp-range=set:lan,$DHCP_START,$DHCP_END,$LAN_MASK,$DHCP_LEASE"
+		if has_ipv6; then
+			# SLAAC on the /64 that rtn10-dhcp6.script puts on br0, DNS via
+			# stateless DHCPv6 and RA
+			echo "enable-ra"
+			echo "dhcp-range=::,constructor:$LAN_IF,ra-stateless,12h"
+		fi
+		if guest_configured; then
+			echo "interface=$GUEST_IF"
+			echo "dhcp-range=set:guest,$GUEST_DHCP_START,$GUEST_DHCP_END,255.255.255.0,2h"
+		fi
+		[ -f "$CONF_DIR/static-leases" ] &&
+		while read -r mac ip name rest; do
+			case "$mac" in ''|\#*) continue ;; esac
+			if valid_mac "$mac" && valid_lan_ip "$ip"; then
+				echo "dhcp-host=$mac,$ip${name:+,$name}"
+			else
+				logger -t rtn10 "static-leases: ignoring '$mac $ip $name'"
+			fi
+		done < "$CONF_DIR/static-leases"
+	} > $DNSMASQ_CONF
+}
+
+dnsmasq_start() {
+	dnsmasq_stop
+	write_dnsmasq_conf
+	dnsmasq -C $DNSMASQ_CONF -x $RUN/dnsmasq.pid
+}
+
+dnsmasq_stop() {
+	stop_pid $RUN/dnsmasq.pid
+	killall dnsmasq udhcpd 2>/dev/null
+}
+
+# Fallback if dnsmasq does not start: busybox udhcpd hands out LAN addresses
+# and the upstream DNS servers known at this moment (no DNS cache, no guests).
+udhcpd_fallback() {
+	logger -t rtn10 "dnsmasq failed, falling back to udhcpd"
+	dns=$(sed -n 's/^nameserver \([0-9.]*\).*/\1/p' /etc/resolv.conf 2>/dev/null | tr '\n' ' ')
+	{
+		echo "interface $LAN_IF"
+		echo "start $DHCP_START"
+		echo "end $DHCP_END"
+		echo "lease_file /tmp/udhcpd.leases"
+		echo "pidfile $RUN/udhcpd.pid"
+		echo "option subnet $LAN_MASK"
+		echo "option router $LAN_IP"
+		echo "option lease 600"
+		[ -n "$dns" ] && echo "option dns $dns"
+	} > /tmp/udhcpd.conf
+	touch /tmp/udhcpd.leases
+	udhcpd /tmp/udhcpd.conf
+}
+
+# ---- Wi-Fi ----
+
+# $1 = 1 for HT40, $2 = 1 to include the guest BSS
+write_hostapd_conf() {
+	{
+		echo "interface=$WIFI_IF"
+		echo "bridge=$LAN_IF"
+		echo "driver=nl80211"
+		echo "ctrl_interface=/var/run/hostapd"
+		echo "ssid=$(cat "$CONF_DIR/ssid")"
+		echo "utf8_ssid=1"
+		echo "country_code=$WIFI_COUNTRY"
+		echo "ieee80211d=1"
+		echo "hw_mode=g"
+		echo "channel=$WIFI_CHANNEL"
+		echo "ieee80211n=1"
+		# 40 MHz only when the band is free; hostapd falls back to 20 MHz
+		[ "$1" = 1 ] && echo "ht_capab=[HT40+][SHORT-GI-20][SHORT-GI-40]"
+		echo "wmm_enabled=1"
+		echo "auth_algs=1"
+		echo "wpa=2"
+		echo "wpa_key_mgmt=WPA-PSK"
+		echo "rsn_pairwise=CCMP"
+		echo "wpa_passphrase=$(cat "$CONF_DIR/psk")"
+		if [ "$2" = 1 ]; then
+			echo "bss=$WIFI_IF-1"
+			echo "bridge=$GUEST_IF"
+			echo "ssid=$(cat "$CONF_DIR/guest-ssid")"
+			echo "utf8_ssid=1"
+			echo "ap_isolate=1"
+			echo "wmm_enabled=1"
+			echo "auth_algs=1"
+			echo "wpa=2"
+			echo "wpa_key_mgmt=WPA-PSK"
+			echo "rsn_pairwise=CCMP"
+			echo "wpa_passphrase=$(cat "$CONF_DIR/guest-psk")"
+		fi
+	} > $HOSTAPD_CONF
+	chmod 600 $HOSTAPD_CONF
+}
+
+wifi_running() {
+	[ -f $RUN/hostapd.pid ] && kill -0 "$(cat $RUN/hostapd.pid)" 2>/dev/null
+}
+
+hostapd_try() {	# $1 HT40, $2 guest
+	write_hostapd_conf "$1" "$2"
+	hostapd -B -s -P $RUN/hostapd.pid $HOSTAPD_CONF >/dev/null 2>&1
+}
+
+# Wi-Fi access point. The WPS button toggles it (rtn10-gpio); the off state
+# is kept in /tmp only, so every boot starts with Wi-Fi on.
+# Newer, untested features are dropped one by one if hostapd refuses them,
+# so that the main network always comes up.
+wifi_start() {
+	rm -f /tmp/rtn10.wifi-off
+	wifi_running && return 0
+	g=0
+	guest_configured && g=1
+	hostapd_try 1 $g && return 0
+	if [ $g = 1 ]; then
+		logger -t rtn10 "hostapd failed with the guest network, retrying without it"
+		hostapd_try 1 0 && return 0
+	fi
+	logger -t rtn10 "hostapd failed with HT40, retrying with 20 MHz only"
+	hostapd_try 0 0
+}
+
+wifi_stop() {
+	stop_pid $RUN/hostapd.pid
+	ip link set $WIFI_IF down 2>/dev/null
+}
+
+# ---- start / stop ----
+
+start() {
+	if ! configured; then
+		echo "Router services: not configured yet, run rtn10-setup on the console"
+		return 0
+	fi
+	printf "Starting router services: "
+
+	guest_configured && guest_bridge_up
+	firewall_start
+	firewall6_start
+
+	# WAN: DHCP client in the background, does not block when unplugged.
+	# It writes the upstream DNS servers to /etc/resolv.conf for dnsmasq.
+	udhcpc -b -S -i $WAN_IF -x hostname:"$(cat /proc/sys/kernel/hostname)" -p $RUN/udhcpc.$WAN_IF.pid \
+		-s /usr/share/udhcpc/default.script >/dev/null 2>&1
+
+	if has_ipv6; then
+		udhcpc6 -b -S -d -i $WAN_IF -p $RUN/udhcpc6.$WAN_IF.pid \
+			-s /usr/share/udhcpc/rtn10-dhcp6.script >/dev/null 2>&1
+	fi
+
+	dnsmasq_start || { echo "(dnsmasq failed, using udhcpd) "; udhcpd_fallback; }
+	wifi_start || echo "(hostapd failed) "
+
+	# clock: no RTC on this board; ntpd keeps retrying until WAN/DNS is up
+	ntpd -p "$NTP_SERVER"
+
+	touch /tmp/rtn10.ready
+	guest_configured && g=", guest \"$(cat "$CONF_DIR/guest-ssid")\"" || g=
+	echo "OK (Wi-Fi \"$(cat "$CONF_DIR/ssid")\"$g, LAN $LAN_IP, WAN $WAN_IF)"
+}
+
+stop() {
+	printf "Stopping router services: "
+	rm -f /tmp/rtn10.ready
+	killall ntpd 2>/dev/null
+	wifi_stop
+	dnsmasq_stop
+	stop_pid $RUN/udhcpc.$WAN_IF.pid
+	stop_pid $RUN/udhcpc6.$WAN_IF.pid
+	firewall6_stop
+	firewall_stop
+	guest_bridge_down
+	echo "OK"
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; sleep 1; start ;;
+	wifi-on)
+		configured || exit 0
+		wifi_start && logger -t rtn10 "Wi-Fi on"
+		;;
+	wifi-off)
+		wifi_stop
+		touch /tmp/rtn10.wifi-off
+		logger -t rtn10 "Wi-Fi off"
+		;;
+	wifi-toggle)
+		if wifi_running; then "$0" wifi-off; else "$0" wifi-on; fi
+		;;
+	*) echo "Usage: $0 {start|stop|restart|wifi-on|wifi-off|wifi-toggle}"; exit 1 ;;
+esac

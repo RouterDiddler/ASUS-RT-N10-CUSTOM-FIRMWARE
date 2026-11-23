@@ -1,0 +1,31 @@
+#!/bin/sh
+# Guest Wi-Fi: a second, isolated network (192.168.20.0/24, internet only).
+#   rtn10-guest          show status
+#   rtn10-guest on       ask for the guest network name and password
+#   rtn10-guest off      remove the guest network
+export LC_ALL=C
+. /etc/rtn10/defaults
+case "$1" in
+	""|status)
+		if [ -s "$CONF_DIR/guest-ssid" ]; then
+			echo "Guest Wi-Fi: \"$(cat "$CONF_DIR/guest-ssid")\" ($GUEST_IP/24)"
+		else
+			echo "Guest Wi-Fi: off"
+		fi ;;
+	on)
+		printf "Guest network name (1-32 bytes): "
+		IFS= read -r ssid || exit 1
+		n=${#ssid}; { [ "$n" -ge 1 ] && [ "$n" -le 32 ]; } || { echo "Invalid length." >&2; exit 1; }
+		printf "Guest password (WPA2, 8-63 characters): "
+		stty -echo 2>/dev/null; IFS= read -r psk; stty echo 2>/dev/null; echo
+		n=${#psk}; { [ "$n" -ge 8 ] && [ "$n" -le 63 ]; } || { echo "Invalid length." >&2; exit 1; }
+		case "$psk" in *[!\ -~]*) echo "Use ASCII letters, digits and punctuation only." >&2; exit 1 ;; esac
+		umask 077
+		printf '%s\n' "$ssid" > "$CONF_DIR/guest-ssid" &&
+		printf '%s\n' "$psk" > "$CONF_DIR/guest-psk" && /usr/sbin/rtn10-save || exit 1
+		/etc/init.d/S50router restart ;;
+	off)
+		rm -f "$CONF_DIR/guest-ssid" "$CONF_DIR/guest-psk"; /usr/sbin/rtn10-save
+		/etc/init.d/S50router restart ;;
+	*) echo "Usage: $0 [status|on|off]"; exit 1 ;;
+esac

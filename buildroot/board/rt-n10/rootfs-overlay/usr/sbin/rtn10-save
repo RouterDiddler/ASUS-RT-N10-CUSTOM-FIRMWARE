@@ -1,0 +1,4 @@
+#!/bin/sh
+# Write the settings in /data/rtn10 to flash (two-copy settings blocks).
+# Run it after editing files there by hand (static-leases, port-forwards).
+exec /usr/sbin/rtn10-cfg save

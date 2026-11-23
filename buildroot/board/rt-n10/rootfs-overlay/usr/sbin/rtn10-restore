@@ -1,0 +1,12 @@
+#!/bin/sh
+# Restore settings saved by rtn10-backup from stdin and restart, e.g.:
+#   ssh root@192.168.10.1 rtn10-restore < rtn10-settings.tar
+. /etc/rtn10/defaults
+[ -t 0 ] && { echo "Feed a backup on stdin, see: head -5 $0" >&2; exit 1; }
+TMP=/tmp/rtn10-restore.$$
+mkdir -p "$TMP" && tar -C "$TMP" -xf - || { rm -rf "$TMP"; echo "Not a valid backup." >&2; exit 1; }
+[ -s "$TMP/rtn10/ssid" ] && [ -s "$TMP/rtn10/psk" ] || { rm -rf "$TMP"; echo "Backup has no Wi-Fi settings." >&2; exit 1; }
+rm -rf "$CONF_DIR" && mv "$TMP/rtn10" "$CONF_DIR" && rm -rf "$TMP" && /usr/sbin/rtn10-save >&2 || exit 1
+echo "Settings restored, restarting services." >&2
+/etc/init.d/S50router restart >&2
+/etc/init.d/S55sshd restart >&2

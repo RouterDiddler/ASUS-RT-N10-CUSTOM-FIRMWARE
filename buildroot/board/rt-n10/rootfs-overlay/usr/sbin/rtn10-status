@@ -1,0 +1,38 @@
+#!/bin/sh
+# One-screen router status.
+. /etc/rtn10/defaults
+ip4() { ip -4 addr show "$1" 2>/dev/null | sed -n 's/.*inet \([0-9./]*\).*/\1/p' | head -n1; }
+echo "== $(hostname)  $(date)"
+echo "uptime:  $(uptime | sed 's/^ *//')"
+set -- $(free | sed -n 2p)
+echo "memory:  $3 KB used, $4 KB free"
+/usr/sbin/rtn10-cfg status 2>/dev/null | sed 's/^/flash:   /'
+echo
+echo "WAN ($WAN_IF): $(ip4 $WAN_IF || echo -)   gateway: $(ip route | sed -n 's/^default via \([0-9.]*\).*/\1/p')"
+echo "DNS:     $(sed -n 's/^nameserver \([0-9.]*\).*/\1/p' /etc/resolv.conf | tr '\n' ' ')"
+echo "LAN ($LAN_IF): $(ip4 $LAN_IF)"
+if [ -d /proc/sys/net/ipv6 ]; then
+	w6=$(ip -6 addr show $WAN_IF scope global 2>/dev/null | sed -n 's/.*inet6 \([0-9a-f:/]*\).*/\1/p' | head -n1)
+	echo "IPv6:    WAN ${w6:--}   LAN $(cat /tmp/rtn10.lan6 2>/dev/null || echo -)"
+fi
+if [ -e /tmp/rtn10.wifi-off ]; then
+	echo "Wi-Fi:   off (WPS button)"
+elif pidof hostapd >/dev/null; then
+	ch=$(sed -n 's/^channel=//p' /tmp/hostapd.conf 2>/dev/null | head -n1)
+	grep -q '^ht_capab=.*HT40' /tmp/hostapd.conf 2>/dev/null && bw="20/40 MHz" || bw="20 MHz"
+	echo "Wi-Fi:   \"$(cat $CONF_DIR/ssid 2>/dev/null)\"  channel $ch, $bw"
+	[ -d /sys/class/net/$WIFI_IF-1 ] && echo "Guest:   \"$(cat $CONF_DIR/guest-ssid)\" ($GUEST_IP/24)"
+else
+	echo "Wi-Fi:   not running"
+fi
+echo
+echo "DHCP leases:"
+if [ -s /tmp/dnsmasq.leases ]; then
+	while read -r exp mac ip name rest; do
+		printf "  %-15s %-17s %s\n" "$ip" "$mac" "$name"
+	done < /tmp/dnsmasq.leases
+else
+	echo "  (none)"
+fi
+[ -s $CONF_DIR/port-forwards ] && { echo; echo "Port forwards:"; grep -v '^#' $CONF_DIR/port-forwards | sed 's/^/  /'; }
+exit 0

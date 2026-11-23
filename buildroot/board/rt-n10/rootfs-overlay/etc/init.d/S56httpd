@@ -1,0 +1,19 @@
+#!/bin/sh
+# Web page on the LAN (busybox httpd, http://192.168.10.1/), password
+# protected. Off until a password is set with rtn10-webpass.
+. /etc/rtn10/defaults
+PASS=$CONF_DIR/web-pass
+case "$1" in
+	start)
+		[ -s "$PASS" ] || exit 0
+		printf "Starting web page: "
+		umask 077
+		echo "/:admin:$(cat "$PASS")" > /tmp/httpd.conf
+		httpd -p "$LAN_IP:80" -h /www -c /tmp/httpd.conf && echo "OK (http://$LAN_IP/, user admin)" || echo "FAIL"
+		;;
+	stop)
+		killall httpd 2>/dev/null; rm -f /tmp/httpd.conf
+		;;
+	restart) "$0" stop; sleep 1; "$0" start ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

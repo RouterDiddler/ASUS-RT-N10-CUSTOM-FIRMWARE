@@ -1,0 +1,176 @@
+#!/bin/sh
+# Settings storage of the RT-N10: two 64 KB flash blocks, "cfg-a" (0x030000)
+# and "cfg-b" (0x3f0000), each holding one complete copy of $CONF_DIR.
+# /data itself is a tmpfs; the settings live there while the router runs.
+#
+#   rtn10-cfg load     (S45data) unpack the newest valid copy into /data
+#   rtn10-cfg save     write $CONF_DIR to flash (same as rtn10-save)
+#   rtn10-cfg erase    wipe both copies (factory reset)
+#   rtn10-cfg status   show both copies
+#
+# Block format: a 64 byte header line
+#     "RTN10CFG <seq> <len> <md5>" padded with spaces, then "\n"
+# followed by <len> bytes of tar (rtn10/...) with md5 <md5>; the rest is 0xff.
+#
+# save writes the new copy (seq + 1) over the OLDER of the two blocks, with
+# flashcp (erase, write, read back and compare). If power is lost while
+# writing, the other block still has the previous settings.
+# A save that would not change anything is skipped (no flash wear).
+#
+# In the RAM test image both blocks are read-only: load still works, save
+# and erase only warn (settings stay in RAM until the next reboot).
+
+. /etc/rtn10/defaults
+export LC_ALL=C
+
+BLK=65536
+HDR=64
+MAX=$((BLK - HDR))
+W=/tmp/rtn10-cfg.$$
+LOCK=/tmp/rtn10-cfg.lock
+
+log() { echo "rtn10-cfg: $*" >&2; logger -t rtn10-cfg "$*" 2>/dev/null; }
+
+mtd_of() { grep "\"$1\"" /proc/mtd | cut -d: -f1 | head -n1; }
+writable() { [ -n "$1" ] && [ $(( $(cat /sys/class/mtd/$1/flags) & 0x400 )) -ne 0 ]; }
+
+lock() {
+	i=0
+	until mkdir "$LOCK" 2>/dev/null; do
+		i=$((i + 1))
+		[ $i -gt 60 ] && { log "ERROR: $LOCK is held, giving up"; exit 1; }
+		sleep 0.5
+	done
+	trap 'rm -rf "$W" "$LOCK"' EXIT
+	trap 'exit 1' INT TERM HUP
+	mkdir -p "$W" || exit 1
+}
+
+# scan <name>: copy the block to $W/<name> and set
+#   <name>_dev  mtdN or empty      <name>_seq  sequence number, 0 = no valid copy
+#   <name>_len  payload length     <name>_md5  payload md5
+scan() {
+	local n=$1 dev seq=0 len=0 md5= hdr
+	dev=$(mtd_of cfg-$n)
+	if [ -n "$dev" ] && [ -c /dev/$dev ] &&
+	   dd if=/dev/$dev of="$W/$n" bs=$BLK count=1 2>/dev/null &&
+	   [ "$(wc -c < "$W/$n")" -eq $BLK ]; then
+		hdr=$(dd if="$W/$n" bs=$HDR count=1 2>/dev/null | tr -cd 'A-Za-z0-9 ')
+		set -- $hdr
+		if [ "$1" = RTN10CFG ] && [ $# -eq 4 ]; then
+			case "$2$3" in *[!0-9]*) ;; *)
+				case "$4" in *[!0-9a-f]*) ;; *)
+					if [ ${#4} -eq 32 ] && [ ${#2} -le 9 ] && [ ${#3} -le 5 ] && [ "$3" -gt 0 ] && [ "$3" -le $MAX ] &&
+					   [ "$(payload "$n" "$3" | md5sum | cut -c1-32)" = "$4" ]; then
+						seq=$2; len=$3; md5=$4
+					fi ;;
+				esac ;;
+			esac
+		fi
+	fi
+	eval "${n}_dev=\$dev ${n}_seq=\$seq ${n}_len=\$len ${n}_md5=\$md5"
+}
+
+payload() { dd if="$W/$1" bs=$HDR skip=1 2>/dev/null | head -c "$2"; }
+
+scan_both() { scan a; scan b; }
+
+# newest valid copy: a, b or empty
+newest() {
+	if [ "$a_seq" -gt 0 ] && [ "$a_seq" -ge "$b_seq" ]; then echo a
+	elif [ "$b_seq" -gt 0 ]; then echo b
+	fi
+}
+
+do_load() {
+	local n other
+	lock
+	scan_both
+	n=$(newest)
+	[ "$n" = a ] && other=b || other=a
+	for c in $n $other; do
+		eval "s=\$${c}_seq l=\$${c}_len"
+		[ "$s" -gt 0 ] || continue
+		rm -rf "$CONF_DIR"
+		if payload $c "$l" | tar -C "${CONF_DIR%/*}" -xf - && [ -d "$CONF_DIR" ]; then
+			echo "settings from cfg-$c (#$s, $l bytes)"
+			return 0
+		fi
+		log "copy cfg-$c (#$s) did not unpack"
+	done
+	rm -rf "$CONF_DIR"
+	echo "no saved settings"
+	return 1
+}
+
+do_save() {
+	local n t len md5 seq dev
+	[ -d "$CONF_DIR" ] || { log "ERROR: $CONF_DIR does not exist"; exit 1; }
+	lock
+	tar -C "${CONF_DIR%/*}" -cf "$W/new" "${CONF_DIR##*/}" || { log "ERROR: tar failed"; exit 1; }
+	len=$(wc -c < "$W/new")
+	[ "$len" -le $MAX ] || { log "ERROR: settings are $len bytes, at most $MAX fit"; exit 1; }
+	md5=$(md5sum "$W/new" | cut -c1-32)
+	scan_both
+	n=$(newest)
+	if [ -n "$n" ]; then
+		eval "[ \"\$${n}_md5\" = \"$md5\" ]" && { echo "settings unchanged, nothing written" >&2; return 0; }
+		eval "seq=\$((\$${n}_seq + 1))"
+		[ "$n" = a ] && t=b || t=a
+	else
+		seq=1; t=a
+	fi
+	eval "dev=\$${t}_dev"
+	[ -n "$dev" ] || { log "ERROR: no cfg-$t partition"; exit 1; }
+	if ! writable "$dev"; then
+		log "WARNING: cfg-$t is read-only (RAM test image?), settings NOT saved to flash"
+		return 0
+	fi
+	{ printf '%-63s\n' "RTN10CFG $seq $len $md5"; cat "$W/new"; } > "$W/img"
+	[ "$(wc -c < "$W/img")" -eq $((HDR + len)) ] || { log "ERROR: bad header"; exit 1; }
+	flashcp "$W/img" /dev/$dev || flashcp "$W/img" /dev/$dev || { log "ERROR: writing cfg-$t failed"; exit 1; }
+	log "saved to cfg-$t (#$seq, $len bytes)"
+}
+
+do_erase() {
+	local rc=0 c dev
+	lock
+	dd if=/dev/zero bs=$HDR count=1 2>/dev/null | tr '\000' '\377' > "$W/ff"
+	for c in a b; do
+		dev=$(mtd_of cfg-$c)
+		if ! writable "$dev"; then
+			log "WARNING: cfg-$c is read-only (RAM test image?), not erased"; rc=1; continue
+		fi
+		# flashcp erases the whole 64 KB block, then writes 64 bytes of 0xff
+		flashcp "$W/ff" /dev/$dev || { log "ERROR: erasing cfg-$c failed"; rc=1; }
+	done
+	[ $rc -eq 0 ] && log "both settings copies erased"
+	return $rc
+}
+
+do_status() {
+	local c n
+	lock
+	scan_both
+	n=$(newest)
+	for c in a b; do
+		eval "d=\$${c}_dev s=\$${c}_seq l=\$${c}_len"
+		if [ -z "$d" ]; then st="missing"
+		elif [ "$s" -gt 0 ]; then st="#$s, $l bytes"
+		else st="empty"
+		fi
+		writable "$d" && rw=rw || rw=ro
+		[ "$c" = "$n" ] && cur=" (current)" || cur=
+		echo "cfg-$c ${d:--} $rw: $st$cur"
+	done
+	[ -d "$CONF_DIR" ] && tar -C "${CONF_DIR%/*}" -cf - "${CONF_DIR##*/}" | wc -c |
+		{ read -r sz; echo "settings in RAM: $sz of $MAX bytes"; }
+}
+
+case "$1" in
+	load) do_load ;;
+	save) do_save ;;
+	erase) do_erase ;;
+	status|"") do_status ;;
+	*) echo "Usage: $0 {load|save|erase|status}"; exit 1 ;;
+esac

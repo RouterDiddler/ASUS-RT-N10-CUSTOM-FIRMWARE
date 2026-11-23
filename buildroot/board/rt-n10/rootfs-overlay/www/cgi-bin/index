@@ -1,0 +1,14 @@
+#!/bin/sh
+. /www/cgi-bin/common.sh
+page_head "RT-N10"
+echo "<h1>$(cat /proc/sys/kernel/hostname | esc)</h1><pre>"
+/usr/sbin/rtn10-status 2>&1 | esc
+echo '</pre><h2>Wi-Fi</h2><form method="post" action="/cgi-bin/save">'
+echo '<input type="hidden" name="action" value="wifi">'
+echo "Ağ adı (SSID):<br><input name=\"ssid\" maxlength=\"32\" value=\"$(esc < $CONF_DIR/ssid)\"><br>"
+echo 'Yeni şifre (boş = değiştirme):<br><input name="psk" type="password" maxlength="63"><br>'
+echo '<input type="submit" value="Kaydet"></form>'
+echo '<h2>Router</h2><form method="post" action="/cgi-bin/save">'
+echo '<input type="hidden" name="action" value="reboot"><input type="submit" value="Yeniden başlat"></form>'
+echo '<p>Misafir ağı, SSH anahtarları ve port yönlendirme: konsol ya da SSH (rtn10-guest, rtn10-sshkey, /data/rtn10 + rtn10-save).</p>'
+page_foot

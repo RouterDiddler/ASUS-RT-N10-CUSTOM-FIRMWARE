@@ -1,0 +1,25 @@
+#!/bin/sh
+# Show or add SSH public keys for root (stored in /data, saved with rtn10-save).
+#   rtn10-sshkey            list keys
+#   rtn10-sshkey add        paste one "ssh-ed25519 AAAA... comment" line
+#   rtn10-sshkey reset      back to the key built into the firmware
+. /etc/rtn10/defaults
+F=$CONF_DIR/ssh/authorized_keys
+umask 077
+mkdir -p "$CONF_DIR/ssh"
+case "$1" in
+	""|list)
+		[ -s "$F" ] && cut -d' ' -f1,3- "$F" || echo "(no keys)" ;;
+	add)
+		printf "Paste the public key (ssh-ed25519 ...): "
+		IFS= read -r key || exit 1
+		case "$key" in
+			ssh-ed25519\ AAAA*) ;;
+			*) echo "Only ssh-ed25519 keys are accepted." >&2; exit 1 ;;
+		esac
+		grep -qxF "$key" "$F" 2>/dev/null && { echo "Already present."; exit 0; }
+		echo "$key" >> "$F" && /usr/sbin/rtn10-save && echo "Added." ;;
+	reset)
+		cp /etc/rtn10/authorized_keys.default "$F" && /usr/sbin/rtn10-save && echo "Reset to the default key." ;;
+	*) echo "Usage: $0 [list|add|reset]"; exit 1 ;;
+esac

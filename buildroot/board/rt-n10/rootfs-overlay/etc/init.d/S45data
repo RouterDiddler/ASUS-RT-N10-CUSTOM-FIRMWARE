@@ -1,0 +1,24 @@
+#!/bin/sh
+# /data is a tmpfs; the settings (/data/rtn10) are unpacked into it from the
+# newest valid of the two flash settings copies (cfg-a / cfg-b), see
+# rtn10-cfg. Changes are written back to flash with rtn10-save.
+# No valid copy (first boot, after a factory reset): the wizard runs.
+
+MNT=/data
+
+start() {
+	mkdir -p $MNT
+	grep -q " $MNT " /proc/mounts && return 0
+	printf "Mounting %s: " "$MNT"
+	if ! mount -t tmpfs -o size=256k,mode=0755 tmpfs $MNT; then
+		echo "FAIL"; return 1
+	fi
+	echo "OK, tmpfs, $(/usr/sbin/rtn10-cfg load)"
+}
+
+case "$1" in
+	start) start ;;
+	stop) ;;	# nothing to do: every change is saved when it is made
+	restart) ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Set the password of the web page (user "admin") or turn the page off.
+#   rtn10-webpass        set / change the password
+#   rtn10-webpass off    remove it, the web page stops
+. /etc/rtn10/defaults
+export LC_ALL=C
+F=$CONF_DIR/web-pass
+if [ "$1" = off ]; then
+	rm -f "$F"; /usr/sbin/rtn10-save; /etc/init.d/S56httpd stop; echo "Web page off."; exit 0
+fi
+printf "Web password for user admin (8-63 characters): "
+stty -echo 2>/dev/null; IFS= read -r p1; stty echo 2>/dev/null; echo
+printf "Again: "
+stty -echo 2>/dev/null; IFS= read -r p2; stty echo 2>/dev/null; echo
+[ "$p1" = "$p2" ] || { echo "Passwords differ." >&2; exit 1; }
+n=${#p1}; { [ "$n" -ge 8 ] && [ "$n" -le 63 ]; } || { echo "8-63 characters." >&2; exit 1; }
+case "$p1" in *[!\ -~]*|*:*) echo "Use printable ASCII, no ':'." >&2; exit 1 ;; esac
+umask 077
+httpd -m "$p1" > "$F.new" && [ -s "$F.new" ] && mv "$F.new" "$F" && /usr/sbin/rtn10-save || { echo "Failed." >&2; exit 1; }
+/etc/init.d/S56httpd restart
