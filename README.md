@@ -1,14 +1,45 @@
-# ASUS-RT-N10-CUSTOM-FIRMWARE
-I made a custom firmware for a ASUS RT N10 router.
+# ASUS RT-N10 Custom Firmware
 
-If you want to use this firmware you must get uImage-flash image from the releases or use the patches with in the repository.After that get the router in flash writing mode via UART(Check the OpenWrt doc for more info) and write the uImage-Flash file(Or your own build) with TFTP.
+A custom firmware project developed specifically for the **ASUS RT-N10 B** router.
 
-SOME PROBLEMS
+## Installation
 
-Because the routers small flash size(4 mb) I had to limit the kernel space and give it to rootfs also the router version I developed this firmware for is RT-N10 B without a USB port so it might not work in other devices
+To use this firmware, you can either download the prebuilt `uImage-flash` image from the [Releases](../../releases) section or build your own image using the patches provided in this repository.
 
-I am not responsible for any damages caused to your router.Use it with your own risk.
+Once you have the image:
 
-(This Is NOT Openwrt as there is closed source firmware)
+1. Connect to your router via UART.
+2. Put the router into flash-writing mode (refer to the [OpenWrt documentation](https://openwrt.org/docs/techref/bootloader)).
+3. Transfer the `uImage-flash` image (or your own build) to the router using TFTP.
+4. Flash the image to the appropriate partition.
 
-Last thing of all is I bricked my router so I wont be able to develop this project further unfornutalitly(sorry for bad english)
+**Warning:** Make sure you understand the flashing process and your router's flash layout before proceeding. Flashing an incompatible image or writing to the wrong partition may permanently brick your device.
+
+## Known Limitations
+
+Due to the router's limited **4 MB flash capacity**, kernel space had to be reduced to make more room for the root filesystem.
+
+Additionally, this firmware was developed specifically for the **ASUS RT-N10 B**, a hardware revision without a USB port. Compatibility with other RT-N10 revisions and similar devices is not guaranteed.
+
+## Features
+
+- **IPv6 Support**
+- **Modern Linux Kernel**
+- **Fast Boot Time**
+- **Reset Button Functionality:** Holding the Reset button for 3 seconds resets the Wi-Fi settings.
+- **WPS Button Functionality:** Pressing the WPS button toggles Wi-Fi on and off.
+
+## Important Notes
+
+- This project is **NOT OpenWrt**.
+- The firmware contains closed-source components inherited from the original vendor firmware.
+- Hardware compatibility is limited and has not been verified across other revisions.
+- Use this firmware at your own risk. I am not responsible for any damage caused by flashing or using it.
+
+## Project Status
+
+Unfortunately, development has been discontinued.
+
+I ended up bricking my own router during development, which left me unable to continue working on the project.
+
+Thank you to everyone interested in this project.
